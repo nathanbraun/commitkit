@@ -145,6 +145,7 @@ commitkit-desktop ──syncs with──> commitkit-server (api.screentime.commi
 - **UI**: Desktop/web apps use shadcn/ui (new-york style) + Tailwind CSS + Radix primitives
 - **Tauri IPC**: Frontend calls `invoke("command", { args })` → Rust `#[tauri::command]` returns `Result<T, String>`
 - **Local-first data**: Tauri and Expo apps use SQLite as source of truth, syncing to server opportunistically
+- **Cross-device sync**: Desktop templates and lists are shared across all desktop devices for the same user (keyed by `device_type` not `device_id`). Commitments remain device-specific. Mobile and desktop do not sync with each other.
 - **Static export**: Both Tauri apps use Next.js `output: 'export'` (no SSR)
 - **Auth**: Mobile app uses Google Sign-In (native SDK → server verifies ID token → issues JWT). Server auth via `google-auth-library` + `jsonwebtoken`.
 
