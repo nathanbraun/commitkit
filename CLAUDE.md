@@ -3,7 +3,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Is This
 
-CommitKit is a commitment accountability ecosystem — users set goals (productivity timers, screen time limits, habits), and the system enforces them through financial stakes via Stripe. This directory contains 5 independent projects (each with its own git repo) that work together.
+CommitKit is a commitment accountability ecosystem — users set goals (productivity timers, screen time limits, habits), and the system enforces them through financial stakes via Stripe. This directory contains 7 independent projects (each with its own git repo) that work together.
 
 Historical note: earlier there were separate `commitkit-timer` (standalone Tauri timer) and `commitkit-web` (Next.js web app for plans + AI evaluation) projects. Both were folded into `commitkit-desktop`, which now owns timer, screen-time, plans, and project features in a single Tauri app. If you see references to those old project names in commit history or stale docs, map them to `commitkit-desktop`.
 
@@ -14,10 +14,13 @@ Historical note: earlier there were separate `commitkit-timer` (standalone Tauri
 | `commitkit-desktop` | Desktop app — screen time limits, productivity timers, plans (with AI evaluation), projects. Subsumes the former `commitkit-web` and `commitkit-timer`. | Tauri 2, Next.js 16, Rust, SQLite |
 | `commitkit-mobile` | Mobile app — screen time limit enforcement | React Native 0.81, Expo 54, SQLite, Stripe |
 | `commitkit-server` | Backend API for mobile + desktop; owns enforcement ledger and Stripe charges | Express, Drizzle ORM, PostgreSQL, Stripe |
-| `commitkit-eval` | Activity evaluation library (pure logic used by desktop) | Rust 2024 |
+| `commitkit-eval` | Activity evaluation library (pure logic used by desktop + CLI) | Rust 2024 |
 | `commitkit-monitor` | macOS activity monitoring daemon + app warning system | Rust 2024 |
+| `commitkit-rules` | Shared builder + HTTP helpers for the monitor's `/api/domain-rules` contract. Used by desktop and CLI so both produce an identical wire format. | Rust 2024 |
+| `commitkit-data` | Shared SQLite operations on the desktop's `commitkit.db` — project/list resolution, list UUID↔id translation. Used by desktop and CLI so the union of template + project lists is computed identically. | Rust 2024 |
+| `commitkit-cli` | Terminal focus timer (`commit` binary) — project-scoped; runs sessions that report completions counted toward Goal timer checks; pushes rules to the monitor; evaluates via commitkit-eval. (No longer stakes individual timers — Phase 2.) | Rust 2024 |
 
-Three projects have their own `CLAUDE.md` with detailed architecture: `commitkit-desktop`, `commitkit-mobile`, `commitkit-monitor`. Read those when working in a specific project. `commitkit-server` and `commitkit-eval` have no sub-CLAUDE.md yet.
+Five projects have their own `CLAUDE.md` with detailed architecture: `commitkit-desktop`, `commitkit-mobile`, `commitkit-monitor`, `commitkit-rules`, `commitkit-cli`. Read those when working in a specific project. `commitkit-server`, `commitkit-eval`, and `commitkit-data` have no sub-CLAUDE.md yet.
 
 ## Common Commands
 
@@ -61,12 +64,15 @@ pnpm cron:givedirectly-payout   # Batch penalty payouts to GiveDirectly via Merc
 ```
 The three old cron scripts (`cron:timer-failures`, `cron:plan-failures`, `cron:missed-checkins`) were merged into `cron:commitment-failures` — a single unified job that POSTs to `/api/cron/commitment-failures`.
 
-### Rust Projects (commitkit-eval, commitkit-monitor)
+### Rust Projects (commitkit-eval, commitkit-monitor, commitkit-rules, commitkit-cli)
 ```bash
 cargo build             # Debug build
 cargo build --release   # Release build
-cargo run               # Run (monitor only)
+cargo test              # Run tests (commitkit-rules, commitkit-cli have them; commitkit-eval/monitor do not)
+cargo run               # Run (commitkit-monitor daemon; commitkit-cli binary is `commit`)
 ```
+
+`commitkit-cli` installs its binary as `commit` via `cargo install --path commitkit-cli`.
 
 ### Testing
 ```bash
@@ -82,7 +88,7 @@ cd commitkit-mobile && pnpm test:watch   # Watch mode
 cd commitkit-server && pnpm test         # Run tests
 cd commitkit-server && pnpm test:watch   # Watch mode
 ```
-Tests live in `__tests__/` in each project. Rust projects (commitkit-eval, commitkit-monitor) do not have automated tests.
+Tests live in `__tests__/` in each JS project. Rust tests live inline (`#[cfg(test)]` modules). `commitkit-rules` and `commitkit-cli` have `cargo test` suites; `commitkit-eval` and `commitkit-monitor` do not yet.
 
 ## Railway (Production Infrastructure)
 
@@ -106,9 +112,8 @@ railway variable list --service <svc> --json             # Service variables
 |---------|-------------|
 | `commitkit-screentime-server` | Main Express API (api.screentime.commitkit.com) |
 | `ck-st-prod` | PostgreSQL database (prod); `ck-st-dev` also exists for dev |
-| `missed-checkins-cron` | Daily: runs the unified `cron:commitment-failures` script (charges for missed screen-time check-ins, timer deadlines, and plan deadlines). Name is legacy — it now does all three. |
+| `missed-checkins-cron` | Hourly at :05 — runs the unified `cron:commitment-failures` script (charges for missed screen-time check-ins, timer deadlines, and plan deadlines). Name is legacy — it now does all three. The :05 offset avoids racing client-side real-time reports for timers/plans that end on round times. |
 | `givedirectly-payout-cron` | Batches GiveDirectly penalty payouts via Mercury |
-| `timer-failures-cron`, `plan-failures-cron` | **Stopped/deprecated.** Superseded by the unified job above. Do not re-enable without coordinating with the unified script to avoid double-charging. |
 
 ### Direct Database Access
 
@@ -142,12 +147,21 @@ railway up --service commitkit-screentime-server --detach
 ## Cross-Project Dependencies
 
 ```
-commitkit-desktop ──depends on──> commitkit-eval (local Cargo path: ../../commitkit-eval)
-commitkit-desktop ──bundles──> commitkit-monitor (built in build.rs, bundled as Tauri resource)
+commitkit-desktop ──depends on──> commitkit-eval   (local Cargo path: ../../commitkit-eval)
+commitkit-desktop ──depends on──> commitkit-rules  (local Cargo path: ../../commitkit-rules)
+commitkit-desktop ──depends on──> commitkit-data   (local Cargo path: ../../commitkit-data)
+commitkit-desktop ──bundles──> commitkit-monitor   (built in build.rs, bundled as Tauri resource)
 commitkit-desktop ──reads from──> commitkit-monitor's SQLite DB (~/.proof-of-work-monitor/activity.db)
+
+commitkit-cli ──depends on──> commitkit-eval   (local Cargo path: ../commitkit-eval)
+commitkit-cli ──depends on──> commitkit-rules  (local Cargo path: ../commitkit-rules)
+commitkit-cli ──depends on──> commitkit-data   (local Cargo path: ../commitkit-data)
+commitkit-cli ──reads/writes──> commitkit-desktop's SQLite DB (~/Library/Application Support/CommitKit/commitkit.db)
+commitkit-cli ──talks to──> commitkit-monitor's HTTP API (127.0.0.1:8787)
 
 commitkit-mobile ──syncs with──> commitkit-server
 commitkit-desktop ──syncs with──> commitkit-server (api.screentime.commitkit.com)
+commitkit-cli ──syncs with──> commitkit-server (via ckv_ API token + combined auth middleware)
 ```
 
 ## Data Ownership: Local vs Server
@@ -158,20 +172,53 @@ commitkit-desktop ──syncs with──> commitkit-server (api.screentime.commi
 |------|-------|-----|
 | Templates, lists, timer templates | Local creates, server stores | Config is local-first; server needs a copy for cross-device sync and enforcement backstop |
 | Commitments | Local creates, server stores | Device-scoped scheduling; server must know so the unified commitment-failures cron can charge |
-| Timer assignments | **Server** | Server creates deadlines; unified commitment-failures cron charges if no completion reported |
-| Timer sessions | Local | Real-time state; result synced to server via assignment status |
+| Timer assignments (`type='timer'`) | **Dormant (Phase 2)** | No longer created or charged. Was: a standalone staked timer. Now a timer is a check inside a Goal; the Goal charges. The `/api/timer-assignments` GET + the `timer` commitment-type are retained only because `rule_pusher`/`check_commitment_progress` still read them, over an empty set. |
+| Timer sessions | Local | Real-time state; result synced to server via assignment status (see above). |
 | Activity data (monitor DB) | **Local only** | Too granular/sensitive for server; only compliance verdicts cross the boundary |
 | Violations | **Server is ledger**; local is UI cache | Server processes Stripe charges; local stores enough for toasts/acknowledgment |
 | Plans, requirements, evaluations | **Server only** | Web-managed, AI-evaluated, no local copy needed |
-| Claude verification templates/commitments | **Server only** | AI-reported via API token (`/api/claude-verifications/report`); desktop is thin UI. Credentials file at `~/.commitkit/credentials.json` (0600). |
+| Claude verification templates/commitments | **Server only** | AI-reported via API token (`/api/claude-verifications/report`); desktop is thin UI. Credentials file at `~/.commitkit/credentials.json` (0600). Full reporting contract: `commitkit-server/docs/claude-verification-contract.md`. |
 | Projects | **Local only** (sync metadata planned) | Working directories are machine-specific; name/color/eval rules may sync later |
 | Stripe charges, payouts | **Server only** | Financial records |
 
 **Key rules:**
 - Commitments lock after 10 minutes — no softening rules after that
 - `violation_tracking_starts_at` = grace period for mid-day rule creation (forward-looking, not retroactive)
-- Every staked timer must have a server-side assignment — no enforcement-free ad-hoc timers
+- **Timers are never individually staked (Phase 2, 2026-06-18).** A timer is only a *timer check inside a Goal* (internally a `plan`, UI-branded "Goal") plus a *session* that reports a completion to `/api/timer-completions`. The server counts passing completions toward a Goal's timer check; the **Goal** owns the only stake. There is no standalone staked-timer commitment anymore — the cron excludes `type='timer'` and `evaluateTimer`/`finalizeTimer` are deleted. The `type='timer'` row + `/api/timer-assignments` read-path survive only as **dormant infra** (read by `rule_pusher`/`check_commitment_progress`); nothing creates timer rows. See memory `project_plan_to_goal_rename`.
 - Raw activity data never leaves the device — only `was_compliant` + `actual_usage` vs `limit_value`
+- **Local integer IDs stay local.** SQLite `INTEGER PRIMARY KEY` autoincrement values are the efficient intra-local identifier and fine for joins / FKs / in-process references. **They must never leak into anything that outlives the local-ID space** — not into snapshots (`contract_snapshot` / `identity_snapshot`), not into API payloads, not into logs, not into anything sent across devices. When a value crosses that boundary, translate to the row's UUID at the write edge and back to a local integer at the read edge. Leaks produce silent "no distractions configured"–style bugs when local IDs drift (reinstall, list delete+recreate, cross-device). See `docs/list-ids-uuid-migration.md` — the `list_ids` case is now fixed; the doc records the incident and the shape of the migration for reference.
+
+## Runbook: Manually passing a timer that false-failed
+
+When a timer was *legitimately completed* but failed because of a bug or unfair verdict (e.g. the diff-eval false-negative on no-diff app/web work), correct it by flipping **both** databases — the server `timer_completions` row is what the cron counts; the local `timer_sessions` row is only the UI/source-of-truth cache. Flipping just one leaves them inconsistent.
+
+1. **Find the session.** Local:
+   ```sh
+   sqlite3 "$HOME/Library/Application Support/CommitKit/commitkit.db" \
+     "SELECT id, status, evaluation_passed, datetime(started_at,'unixepoch','localtime') AS started, server_completion_id, assignment_id, project_id FROM timer_sessions ORDER BY id DESC LIMIT 6;"
+   ```
+   Note `server_completion_id` (= server `timer_completions.id`) and `assignment_id` (**empty = free timer**; non-empty = individually staked).
+
+2. **Flip the server completion** (what the cron counts). `psql` isn't installed — use the node-pg pattern in *Direct Database Access* above, DB URL from `railway variable list --service ck-st-prod`:
+   ```sql
+   UPDATE timer_completions SET evaluation_passed = true,
+     evaluation_summary = 'Manually passed <date>: <reason>'
+   WHERE id = '<server_completion_id>';
+   ```
+
+3. **Flip the local session** for consistency:
+   ```sql
+   UPDATE timer_sessions SET status='completed', evaluation_passed=1,
+     evaluation_summary='Manually passed <date>: <reason>' WHERE id = <local_id>;
+   ```
+
+4. **Assess the *actual* charge risk — flipping may not be enough.** What charges depends on the timer type:
+   - **Free timer (no `assignment_id`)**: charges nothing on its own, but feeds **batch** commitments. The cron evaluator (`commitkit-server/src/domain/evaluators.ts`) counts passing `timer_completions` with `duration_minutes >= min_duration_minutes` and `ended_at` between the commitment's date-midnight (in the user's tz) and `due_at`, optionally project-filtered (`project_filter_uuid` / `project_requirements[].project_name` in `contract_snapshot`; **no filter = any project counts**). **Completions are shared across commitments** — one morning timer counts toward both an AM kickstart and a noon batch. So: query `scheduled_commitments` (`type='timer'`, `status='active'`, `due_at` ahead) for the user, and confirm the flip pushes the count to `>= required_count`. If it's still short, the shortfall is **real** (the user simply did fewer timers than required) — flipping won't prevent that charge; only more passing timers before `due_at` will. Don't move `due_at` to dodge a charge: that violates the user's "commitments lock, no softening" rule.
+   - **Staked timer (`assignment_id` set)**: the assignment row itself is the enforcement deadline. Transition it to `status='completed'` (and ensure no `/api/violations/timer` charge already fired).
+
+5. **Timezone quirk (do not "fix" it).** Server timer timestamps are stored **+5h from true UTC**, but *consistently* — `timer_completions.ended_at` and `scheduled_commitments.due_at` are both shifted, so the cron's in-frame comparisons are correct. When reading back, remember `::text`/`to_char` renders roughly true-UTC; a `due_at` of `17:00` in the stored frame is the user's local **noon**.
+
+6. **Timing.** The cron is Railway `missed-checkins-cron`, hourly at **:05**. The :05 run *after* a commitment's `due_at` is the one that charges, so there's until then to land additional passing timers.
 
 ## Shared Patterns
 
@@ -180,7 +227,7 @@ commitkit-desktop ──syncs with──> commitkit-server (api.screentime.commi
 - **Tauri IPC**: Frontend calls `invoke("command", { args })` → Rust `#[tauri::command]` returns `Result<T, String>`
 - **Local-first data**: Tauri and Expo apps use SQLite as source of truth, syncing to server opportunistically
 - **Static export**: `commitkit-desktop` uses Next.js `output: 'export'` (no SSR)
-- **Auth**: Mobile app uses Google Sign-In (native SDK → server verifies ID token → issues JWT). Server auth via `google-auth-library` + `jsonwebtoken`.
+- **Auth**: Mobile app uses Google Sign-In (native SDK → server verifies ID token → issues JWT). Server auth via `google-auth-library` + `jsonwebtoken`. Routes that need to serve both the desktop (JWT) and external clients like commitkit-cli (`ckv_` tokens) use `authenticateJwtOrApiToken` from `src/middleware/combined-auth.ts` — currently the `/api/timer-assignments` routes.
 
 ## Data Storage Locations (macOS)
 
@@ -188,3 +235,4 @@ commitkit-desktop ──syncs with──> commitkit-server (api.screentime.commi
 - `~/.proof-of-work-monitor/activity.db` — commitkit-monitor SQLite (read by commitkit-desktop)
 - `~/.commitkit/bin/commitkit-monitor` — installed monitor daemon binary
 - `~/Library/LaunchAgents/com.commitkit.monitor.plist` — monitor launchd service
+- `~/.commitkit/timer.lock` — cross-process flock; only one CommitKit timer (CLI or desktop) runs at a time on a given machine. Auto-released on process exit. See `commitkit-data/src/lock.rs`.
