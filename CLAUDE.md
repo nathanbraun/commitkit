@@ -113,7 +113,7 @@ railway variable list --service <svc> --json             # Service variables
 | `commitkit-screentime-server` | Main Express API (api.screentime.commitkit.com) |
 | `ck-st-prod` | PostgreSQL database (prod); `ck-st-dev` also exists for dev |
 | `missed-checkins-cron` | Hourly at :05 — runs the unified `cron:commitment-failures` script (charges for missed screen-time check-ins, timer deadlines, and plan deadlines). Name is legacy — it now does all three. The :05 offset avoids racing client-side real-time reports for timers/plans that end on round times. |
-| `givedirectly-payout-cron` | Batches GiveDirectly penalty payouts via Mercury |
+| `givedirectly-payout-cron` | Batches GiveDirectly penalty payouts via Mercury. The cron service only POSTs to the server — the Mercury transfer code runs on `commitkit-screentime-server`, so all three `MERCURY_*` vars (`API_KEY`, `ACCOUNT_ID`, `RECIPIENT_ID`) must live **on the server service** (fixed 2026-07-14; they were misplaced on the cron service). Mercury expires API tokens after long disuse — payout volume is often below the $10 batch threshold, so expect to recreate the token occasionally (needs Read and Write; IP allowlist `0.0.0.0/0` since Railway has no static egress IP). |
 
 ### Direct Database Access
 
@@ -139,9 +139,21 @@ For interactive sessions: `railway connect ck-st-prod` opens a psql shell using 
 
 ### Deploying
 
-The server auto-deploys from its GitHub repo. To deploy manually:
+The service is connected to its GitHub repo in the Railway console. **Deploying is `git push origin main`** — that's the whole procedure. Auto-deploy builds from the pushed commit.
+
+**Do not use `railway up`.** It uploads your *working tree* as a one-off deployment that GitHub knows nothing about, so production ends up running code that exists in no commit, and the next push silently replaces it with whatever is on main. It also happily deploys uncommitted changes. (Learned 2026-07-15: a `railway up` shipped a prompt fix that only existed locally.)
+
+Two ways a `railway up` goes wrong quietly, if you ever reach for it anyway:
+- Run from the repo root instead of `commitkit-server/`, it ships only `docs/`, `.gitignore`, and this file, and dies at the Railpack stage. That's a *build* failure — Railway keeps the previous deployment serving, so `/health` still returns 200 and nothing looks broken.
+- It returns as soon as the upload starts, so its output never reports the outcome.
+
+Either way, never conclude a deploy landed from the command's output or from a "Server running on port 8080" line in `railway logs` (that's a stale boot from the *previous* deployment). Check the deployment's actual status:
 ```bash
-railway up --service commitkit-screentime-server --detach
+railway service status --all --json | python3 -c "import sys,json; s=json.dumps(json.load(sys.stdin)); i=s.find('commitkit-screentime-server'); print(s[max(0,i-80):i+160])"
+```
+To read logs for a *failed* build, pass its deployment id — the bare `--build` flag shows the last **successful** build, which looks fine and isn't yours:
+```bash
+railway logs <deployment-id> --service commitkit-screentime-server --build --lines 40
 ```
 
 ## Cross-Project Dependencies
@@ -183,6 +195,7 @@ commitkit-cli ──syncs with──> commitkit-server (via ckv_ API token + com
 
 **Key rules:**
 - Commitments lock after 10 minutes — no softening rules after that
+- `users.penalty_destination` is akrasia-locked (2026-07-14): switching to `givedirectly` is immediate; switching back to `platform` is scheduled 48h out (`pending_penalty_destination` + `penalty_destination_applies_at`, applied lazily on preferences GET/PUT and by the hourly cron before charging). A DB trigger rejects direct SQL flips unless a due pending switch authorizes them (`drizzle/0029`).
 - `violation_tracking_starts_at` = grace period for mid-day rule creation (forward-looking, not retroactive)
 - **Timers are never individually staked (Phase 2, 2026-06-18).** A timer is only a *timer check inside a Goal* (internally a `plan`, UI-branded "Goal") plus a *session* that reports a completion to `/api/timer-completions`. The server counts passing completions toward a Goal's timer check; the **Goal** owns the only stake. There is no standalone staked-timer commitment anymore — the cron excludes `type='timer'` and `evaluateTimer`/`finalizeTimer` are deleted. The `type='timer'` row + `/api/timer-assignments` read-path survive only as **dormant infra** (read by `rule_pusher`/`check_commitment_progress`); nothing creates timer rows. See memory `project_plan_to_goal_rename`.
 - Raw activity data never leaves the device — only `was_compliant` + `actual_usage` vs `limit_value`
