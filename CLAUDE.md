@@ -240,6 +240,7 @@ When a timer was *legitimately completed* but failed because of a bug or unfair 
 - **UI**: `commitkit-desktop` uses plain Tailwind CSS 4 with shadcn-style design tokens but no shadcn primitives (hand-rolled buttons/inputs/modals — see `commitkit-desktop/CLAUDE.md`); `commitkit-mobile` uses NativeWind + React Native Reusables
 - **Tauri IPC**: Frontend calls `invoke("command", { args })` → Rust `#[tauri::command]` returns `Result<T, String>`
 - **Local-first data**: Tauri and Expo apps use SQLite as source of truth, syncing to server opportunistically
+- **Cross-device sync**: Desktop templates and lists are shared across all desktop devices for the same user (keyed by `device_type` not `device_id`). Commitments remain device-specific. Mobile and desktop do not sync with each other.
 - **Static export**: `commitkit-desktop` uses Next.js `output: 'export'` (no SSR)
 - **Auth**: Mobile app uses Google Sign-In (native SDK → server verifies ID token → issues JWT). Server auth via `google-auth-library` + `jsonwebtoken`. Routes that need to serve both the desktop (JWT) and external clients like commitkit-cli (`ckv_` tokens) use `authenticateJwtOrApiToken` from `src/middleware/combined-auth.ts` — currently the `/api/timer-assignments` routes.
 
