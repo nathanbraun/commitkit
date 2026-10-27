@@ -57,7 +57,6 @@ pnpm dev                        # Dev server
 pnpm build                      # TypeScript build
 pnpm test                       # Vitest
 pnpm test:watch                 # Vitest watch mode
-pnpm db:migrate                 # Drizzle migrations
 pnpm db:studio                  # Drizzle Studio
 pnpm cron:commitment-failures   # Unified: charges for missed check-ins, timer deadlines, and plan deadlines
 pnpm cron:givedirectly-payout   # Batch penalty payouts to GiveDirectly via Mercury
@@ -113,7 +112,7 @@ railway variable list --service <svc> --json             # Service variables
 | `commitkit-screentime-server` | Main Express API (api.screentime.commitkit.com) |
 | `ck-st-prod` | PostgreSQL database (prod); `ck-st-dev` also exists for dev |
 | `missed-checkins-cron` | Hourly at :05 — runs the unified `cron:commitment-failures` script (charges for missed screen-time check-ins, timer deadlines, and plan deadlines). Name is legacy — it now does all three. The :05 offset avoids racing client-side real-time reports for timers/plans that end on round times. |
-| `givedirectly-payout-cron` | Batches GiveDirectly penalty payouts via Mercury. The cron service only POSTs to the server — the Mercury transfer code runs on `commitkit-screentime-server`, so all three `MERCURY_*` vars (`API_KEY`, `ACCOUNT_ID`, `RECIPIENT_ID`) must live **on the server service** (fixed 2026-07-14; they were misplaced on the cron service). Mercury expires API tokens after long disuse — payout volume is often below the $10 batch threshold, so expect to recreate the token occasionally (needs Read and Write; IP allowlist `0.0.0.0/0` since Railway has no static egress IP). |
+| `givedirectly-payout-cron` | Batches GiveDirectly penalty payouts via Mercury. The cron service only POSTs to the server — the Mercury transfer code runs on `commitkit-screentime-server`, so all three `MERCURY_*` vars (`API_KEY`, `ACCOUNT_ID`, `RECIPIENT_ID`) must live **on the server service** (fixed 2026-07-14; they were misplaced on the cron service). Mercury expires API tokens after long disuse — payout volume is often below the $10 batch threshold, so expect to recreate the token occasionally (needs Read and Write — it POSTs transfers). The server has Railway Static Outbound IPs enabled (Settings → Networking; Pro plan), so the token's allowlist is `162.220.234.241`, `152.55.180.242`, `152.55.180.243` — not `0.0.0.0/0`. The IPs are shared with other Railway customers, and they change if the service moves region (update the allowlist first). Since 2026-10-26 the crons carry only `CRON_SECRET` (a `${{shared.CRON_SECRET}}` reference); keep `MERCURY_*` off them and out of shared variables. |
 
 ### Direct Database Access
 
@@ -149,12 +148,26 @@ Two ways a `railway up` goes wrong quietly, if you ever reach for it anyway:
 
 Either way, never conclude a deploy landed from the command's output or from a "Server running on port 8080" line in `railway logs` (that's a stale boot from the *previous* deployment). Check the deployment's actual status:
 ```bash
-railway service status --all --json | python3 -c "import sys,json; s=json.dumps(json.load(sys.stdin)); i=s.find('commitkit-screentime-server'); print(s[max(0,i-80):i+160])"
+railway service list --json | python3 -c "import sys,json; [print(s['name'], s.get('deploymentId'), s.get('status')) for s in json.load(sys.stdin)]"
 ```
-To read logs for a *failed* build, pass its deployment id — the bare `--build` flag shows the last **successful** build, which looks fine and isn't yours:
+(`railway service status --all` is deprecated.) To read logs for a *failed* build, pass its deployment id — the bare `--build` flag shows the last **successful** build, which looks fine and isn't yours:
 ```bash
 railway logs <deployment-id> --service commitkit-screentime-server --build --lines 40
 ```
+
+### Rotating secrets
+
+Full rotation done 2026-10-26 after a Railway env-var exposure. Where each secret lives:
+- **Server only**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY` (key in its own `commitkit` Console workspace with a $25/mo spend limit), `JWT_SECRET` (rotating it logs every desktop/mobile user out once; `ckv_` tokens are unaffected), `MERCURY_*`.
+- **Shared**: `CRON_SECRET` (server + both crons reference it), `GOOGLE_DESKTOP_CLIENT_ID` (public, not a secret).
+- **`DATABASE_URL`**: the server's is `${{ck-st-prod.DATABASE_URL}}`; on ck-st-prod every URL and `PGPASSWORD` derives from the literal `POSTGRES_PASSWORD`.
+
+Stage all changes, then deploy once between :10 and :50 so the :05 cron doesn't hit a half-rotated state. Stripe: use **Roll** with a ~1h expiry on the old key/secret, so the overlap covers the deploy.
+
+**Postgres password**: editing `POSTGRES_PASSWORD` does *not* change the real password (the image reads it only on first init — Railway warns about this). Order:
+1. `railway connect ck-st-prod`, then `\password` at the psql prompt (keeps the value out of shell history). Use a hex password (`openssl rand -hex 32`); symbols break the URL.
+2. Set `POSTGRES_PASSWORD` on ck-st-prod to the same value and deploy.
+3. **Push to main to redeploy the server** (`git commit --allow-empty`). Changing the referenced variable did not redeploy it; it kept running the old `DATABASE_URL`, and new connections fail until it restarts. Confirm the deployment id changed and the boot log reaches "Changes applied" (the startup schema pull proves the DB connection).
 
 ## Cross-Project Dependencies
 
@@ -182,10 +195,9 @@ commitkit-cli ──syncs with──> commitkit-server (via ckv_ API token + com
 
 | Data | Owner | Why |
 |------|-------|-----|
-| Templates, lists, timer templates | Local creates, server stores | Config is local-first; server needs a copy for cross-device sync and enforcement backstop |
+| Templates, lists | Local creates, server stores | Config is local-first; server needs a copy for cross-device sync and enforcement backstop |
 | Commitments | Local creates, server stores | Device-scoped scheduling; server must know so the unified commitment-failures cron can charge |
-| Timer assignments (`type='timer'`) | **Dormant (Phase 2)** | No longer created or charged. Was: a standalone staked timer. Now a timer is a check inside a Goal; the Goal charges. The `/api/timer-assignments` GET + the `timer` commitment-type are retained only because `rule_pusher`/`check_commitment_progress` still read them, over an empty set. |
-| Timer sessions | Local | Real-time state; result synced to server via assignment status (see above). |
+| Timer sessions | Local | Real-time state; result reported to `/api/timer-completions`, which Goal timer checks count. |
 | Activity data (monitor DB) | **Local only** | Too granular/sensitive for server; only compliance verdicts cross the boundary |
 | Violations | **Server is ledger**; local is UI cache | Server processes Stripe charges; local stores enough for toasts/acknowledgment |
 | Plans, requirements, evaluations | **Server only** | Web-managed, AI-evaluated, no local copy needed |
@@ -194,11 +206,13 @@ commitkit-cli ──syncs with──> commitkit-server (via ckv_ API token + com
 | Stripe charges, payouts | **Server only** | Financial records |
 
 **Key rules:**
-- Commitments lock after 10 minutes — no softening rules after that. The server enforces this for screen-time deletes too (`DELETE /api/commitments/by-client-id` → 409 inside the akrasia window; `src/domain/commitment-guards.ts`), and the delete is a **soft delete** (`commitments.deleted_at`, drizzle `0033`) so violation/charge records outlive the commitment. Stakes are any whole-cent amount $1–$1000, no ladder.
+- Commitments lock after 10 minutes — no softening rules after that. The server enforces this for screen-time deletes too (`DELETE /api/commitments/by-client-id` → 409 inside the akrasia window; `src/domain/commitment-guards.ts`), and the delete is a **soft delete** (`commitments.deleted_at`, drizzle `0033`) so violation/charge records outlive the commitment. Screen-time stakes are any whole-cent amount $1–$1000, no ladder (`PENALTY_MAX_DOLLARS`); Goals and verifications only require a non-negative whole-cent stake.
 - `users.penalty_destination` is akrasia-locked (2026-07-14): switching to `givedirectly` is immediate; switching back to `platform` is scheduled 48h out (`pending_penalty_destination` + `penalty_destination_applies_at`, applied lazily on preferences GET/PUT and by the hourly cron before charging). A DB trigger rejects direct SQL flips unless a due pending switch authorizes them (`drizzle/0029`).
-- **Before-distractions Goals (2026-10-12)**: a Goal with `must_complete_before_distractions` warns on every distraction-list app/tab focused while it's pending (from `pre_distraction_reset_hour` on its date until its deadline). Go Back is free; **Continue is the breach** — monitor queues it → desktop reports `POST /api/plan-commitments/:id/distraction-breach` → server fails + charges the Goal immediately (same `finalizePlan` path and idempotency key as the cron; the evaluator also fails any active Goal carrying `evaluation_state.distraction_breach`). Passive activity never charges. Completion paths never flip a `failed` Goal back to `completed`.
+- **Before-distractions Goals (2026-10-12)**: a Goal with `must_complete_before_distractions` warns on every distraction-list app/tab focused while it's pending (from `pre_distraction_reset_hour` on its date until its deadline). Go Back is free; **Continue is the breach** — monitor queues it → desktop reports `POST /api/plan-commitments/:id/distraction-breach` → server fails + charges the Goal immediately (same `finalizePlan` path and idempotency key as the cron; the evaluator also fails any active Goal carrying `evaluation_state.distraction_breach`). Passive activity never charges. Completion paths never flip a `failed` Goal back to `completed`. The gate does **not** need the desktop running (2026-10-27): the desktop pushes a 14-day schedule of gate windows that the monitor keeps enforcing from `domain-rules.json`, completion reports return `completed_gate_goal_ids` that the reporter forwards to the monitor to lift the warning, and the desktop launches at login. Root cause of the 2026-10-26 miss: app closed for ~2 days, so the monitor's watchlist was a stale "open right now" snapshot. List edits follow akrasia per Goal-day: once a Goal's deadline is inside the akrasia window its apps/domains are locked (`gate_target_locks`, union with current lists — additions apply, removals don't), and Goals further out pick up removals immediately.
+- **One akrasia length**: 48h — server `AKRASIA_MS` (`src/domain/apply-edit.ts`), Rust `commitkit_data::AKRASIA_WINDOW_SECS`, desktop frontend `lib/akrasia.ts`. Keep all three in sync. Every list removal serves it (`pending_removals`), regardless of what uses the list.
+- **Settlement (2026-10-27)**: every past-due commitment settles at `due_at + 24h` (`SETTLEMENT_GRACE_HOURS`, `commitkit-server/src/domain/settlement.ts`). Work done before the deadline that syncs inside that window still counts; going offline can't dodge the charge because it lands at +24h regardless. The first cron run after the deadline that evaluates a row as failed stamps `evaluation_state.missed_at` (row stays `active`); APIs then report it as failed with `charges_at`, and a late pass retracts it. Distraction breaches charge immediately. Replaced the client-liveness deferral (per-user/per-device last-seen + 72h bound), which never settled for an always-online desktop.
 - `violation_tracking_starts_at` = grace period for mid-day rule creation (forward-looking, not retroactive)
-- **Timers are never individually staked (Phase 2, 2026-06-18).** A timer is only a *timer check inside a Goal* (internally a `plan`, UI-branded "Goal") plus a *session* that reports a completion to `/api/timer-completions`. The server counts passing completions toward a Goal's timer check; the **Goal** owns the only stake. There is no standalone staked-timer commitment anymore — the cron excludes `type='timer'` and `evaluateTimer`/`finalizeTimer` are deleted. The `type='timer'` row + `/api/timer-assignments` read-path survive only as **dormant infra** (read by `rule_pusher`/`check_commitment_progress`); nothing creates timer rows. See memory `project_plan_to_goal_rename`.
+- **Timers are never individually staked (Phase 2, 2026-06-18).** A timer is only a *timer check inside a Goal* (internally a `plan`, UI-branded "Goal") plus a *session* that reports a completion to `/api/timer-completions`. The server counts passing completions toward a Goal's timer check; the **Goal** owns the only stake. There is no standalone staked-timer commitment anymore: the timer-assignment and timer-template subsystems (server routes, `/api/violations/timer`, desktop commands, local tables) were deleted 2026-10-27, and `timer_templates` is dropped by `drizzle/0037`. Historical `type='timer'` `scheduled_commitments` rows remain as settled history; the evaluator has no `timer` entry, so one could never charge. See memory `project_plan_to_goal_rename`.
 - Raw activity data never leaves the device — only `was_compliant` + `actual_usage` vs `limit_value`
 - **Local integer IDs stay local.** SQLite `INTEGER PRIMARY KEY` autoincrement values are the efficient intra-local identifier and fine for joins / FKs / in-process references. **They must never leak into anything that outlives the local-ID space** — not into snapshots (`contract_snapshot` / `identity_snapshot`), not into API payloads, not into logs, not into anything sent across devices. When a value crosses that boundary, translate to the row's UUID at the write edge and back to a local integer at the read edge. Leaks produce silent "no distractions configured"–style bugs when local IDs drift (reinstall, list delete+recreate, cross-device). See `docs/list-ids-uuid-migration.md` — the `list_ids` case is now fixed; the doc records the incident and the shape of the migration for reference.
 
@@ -209,9 +223,9 @@ When a timer was *legitimately completed* but failed because of a bug or unfair 
 1. **Find the session.** Local:
    ```sh
    sqlite3 "$HOME/Library/Application Support/CommitKit/commitkit.db" \
-     "SELECT id, status, evaluation_passed, datetime(started_at,'unixepoch','localtime') AS started, server_completion_id, assignment_id, project_id FROM timer_sessions ORDER BY id DESC LIMIT 6;"
+     "SELECT id, status, evaluation_passed, datetime(started_at,'unixepoch','localtime') AS started, server_completion_id, project_id FROM timer_sessions ORDER BY id DESC LIMIT 6;"
    ```
-   Note `server_completion_id` (= server `timer_completions.id`) and `assignment_id` (**empty = free timer**; non-empty = individually staked).
+   Note `server_completion_id` (= server `timer_completions.id`).
 
 2. **Flip the server completion** (what the cron counts). `psql` isn't installed — use the node-pg pattern in *Direct Database Access* above, DB URL from `railway variable list --service ck-st-prod`:
    ```sql
@@ -226,9 +240,7 @@ When a timer was *legitimately completed* but failed because of a bug or unfair 
      evaluation_summary='Manually passed <date>: <reason>' WHERE id = <local_id>;
    ```
 
-4. **Assess the *actual* charge risk — flipping may not be enough.** What charges depends on the timer type:
-   - **Free timer (no `assignment_id`)**: charges nothing on its own, but feeds **batch** commitments. The cron evaluator (`commitkit-server/src/domain/evaluators.ts`) counts passing `timer_completions` with `duration_minutes >= min_duration_minutes` and `ended_at` between the commitment's date-midnight (in the user's tz) and `due_at`, optionally project-filtered (`project_filter_uuid` / `project_requirements[].project_name` in `contract_snapshot`; **no filter = any project counts**). **Completions are shared across commitments** — one morning timer counts toward both an AM kickstart and a noon batch. So: query `scheduled_commitments` (`type='timer'`, `status='active'`, `due_at` ahead) for the user, and confirm the flip pushes the count to `>= required_count`. If it's still short, the shortfall is **real** (the user simply did fewer timers than required) — flipping won't prevent that charge; only more passing timers before `due_at` will. Don't move `due_at` to dodge a charge: that violates the user's "commitments lock, no softening" rule.
-   - **Staked timer (`assignment_id` set)**: the assignment row itself is the enforcement deadline. Transition it to `status='completed'` (and ensure no `/api/violations/timer` charge already fired).
+4. **Assess the *actual* charge risk — flipping may not be enough.** A timer charges nothing on its own; it feeds the **timer checks of Goals**. The cron evaluator (`commitkit-server/src/domain/evaluators.ts`, `timerRequirementCriteria` + `countPassingCompletions`) counts passing `timer_completions` with `duration_minutes >= timerDurationMinutes` and `ended_at` between the Goal's date-midnight (in the user's tz) and `due_at`, optionally project-filtered (`timerProjectRequirements[].project_name` in the check config; **no filter = any project counts**). **Completions are shared across checks** — one morning timer counts toward every Goal whose check it matches. So: query the user's `scheduled_commitments` (`type='plan'`, `status='active'`, `due_at` ahead) with `timer_requirement` checks, and confirm the flip pushes the count to `>= timerCount`. If it's still short, the shortfall is **real** (the user simply did fewer timers than required) — flipping won't prevent that charge; only more passing timers before `due_at` will. Don't move `due_at` to dodge a charge: that violates the user's "commitments lock, no softening" rule.
 
 5. **Timezone quirk (do not "fix" it).** Server timer timestamps are stored **+5h from true UTC**, but *consistently* — `timer_completions.ended_at` and `scheduled_commitments.due_at` are both shifted, so the cron's in-frame comparisons are correct. When reading back, remember `::text`/`to_char` renders roughly true-UTC; a `due_at` of `17:00` in the stored frame is the user's local **noon**.
 
@@ -242,7 +254,7 @@ When a timer was *legitimately completed* but failed because of a bug or unfair 
 - **Local-first data**: Tauri and Expo apps use SQLite as source of truth, syncing to server opportunistically
 - **Cross-device sync**: Desktop templates and lists are shared across all desktop devices for the same user (keyed by `device_type` not `device_id`). Commitments remain device-specific. Mobile and desktop do not sync with each other.
 - **Static export**: `commitkit-desktop` uses Next.js `output: 'export'` (no SSR)
-- **Auth**: Mobile app uses Google Sign-In (native SDK → server verifies ID token → issues JWT). Server auth via `google-auth-library` + `jsonwebtoken`. Routes that need to serve both the desktop (JWT) and external clients like commitkit-cli (`ckv_` tokens) use `authenticateJwtOrApiToken` from `src/middleware/combined-auth.ts` — currently the `/api/timer-assignments` routes.
+- **Auth**: Mobile app uses Google Sign-In (native SDK → server verifies ID token → issues JWT). Server auth via `google-auth-library` + `jsonwebtoken`. Routes that need to serve both the desktop (JWT) and external clients like commitkit-cli (`ckv_` tokens) use `authenticateJwtOrApiToken` from `src/middleware/combined-auth.ts` — the `/api/timer-completions` and `/api/evaluate-session` routes (`/api/claude-verifications/report` is `ckv_`-only via `authenticateApiToken`).
 
 ## Data Storage Locations (macOS)
 
