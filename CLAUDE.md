@@ -134,6 +134,13 @@ const {Client} = require('pg');
 
 (The Drizzle schema may not match what's in prod — column names like `frequency` or `device_type` from older snapshots may not exist. Inspect `information_schema.columns` first when in doubt.)
 
+### Migrations
+
+The server's Railway pre-deploy command is `pnpm run db:push` (drizzle-kit push against `schema.ts`). It applies **additive** changes (new tables/columns) automatically before the new code boots. Anything that would lose data (drops) it only prompts for, and the non-interactive default aborts — the deploy continues and nothing is dropped. So:
+- **Additive:** edit `schema.ts`, write the `drizzle/NNNN_*.sql` file for the record, push. No manual step.
+- **Drops and backfills:** hand-written `drizzle/NNNN_*.sql`, applied with `sh scripts/apply-migration.sh drizzle/NNNN_*.sql [...]` from `commitkit-server/` (each file in its own transaction). Drops go **after** the deploy that stops using the column; backfills go before the deploy that relies on them.
+- A "THIS ACTION WILL CAUSE DATA LOSS" prompt in the deploy log means a drop migration hasn't been applied yet (2026-10-28: 0036, 0037, 0039 had piled up). Don't run drizzle-kit generate — the journal is abandoned past 0018.
+
 For interactive sessions: `railway connect ck-st-prod` opens a psql shell using Railway's bundled binary (no local install needed).
 
 ### Deploying
