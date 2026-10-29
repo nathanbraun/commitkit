@@ -37,6 +37,12 @@ needs a call. build estimates are claude code wall-clock.
   (templates/commitments/violations tables, violation_checker, the limit form,
   check-in + violation sync, violations tab). schema v35, cli unchanged
 
+- projects on the server: rule edits follow akrasia (directories: add now,
+  remove waits), goal timer checks by project uuid + per-project counts
+  (`timerCountsPerProject`), list ids kept stable across sign-in so project
+  list attachments survive. desktop v36, cli 36. backfill 0043 by hand after
+  the desktop uploads its projects
+
 ## bugs still open
 
 - flaky tests seen once each: routes-evaluate-session (neutral-domains),
