@@ -27,11 +27,18 @@ needs a call. build estimates are claude code wall-clock.
 - after the server deploys: apply drizzle 0036 (liveness) + 0037
   (timer_templates) by hand
 
+## done 2026-10-29
+
+- per-check `timerListIds` removed: a session blocks its project's lists only
+  (desktop = cli). closes the local-int leak in prod goal configs; the stale
+  key stays in old configs, unread
+- desktop limits are goals: `usage_limit` check type + `/usage-report` route
+  (immediate charge via shared `domain/breach.ts`); desktop limit stack gone
+  (templates/commitments/violations tables, violation_checker, the limit form,
+  check-in + violation sync, violations tab). schema v35, cli unchanged
+
 ## bugs still open
 
-- local int list ids in prod goal configs: daily review + weekly review timer
-  checks carry `timerListIds: ["19","18",...]` — same leak pattern as before.
-  QUICK-ish: rewrite the configs to uuids, find the write path that leaked
 - flaky tests seen once each: routes-evaluate-session (neutral-domains),
   routes-plan-distraction-breach (socket hang up)
 
@@ -54,6 +61,10 @@ needs a call. build estimates are claude code wall-clock.
   (server copies now shared)
 
 ## your call / later
+- usage_limit check edits classify as weaken whole-check (a tightening waits
+  48h too) — per-field directions in `apply-edit.ts` when it matters
+- move mobile + distractions onto usage_limit checks, then delete the
+  server's screen-time stack (commitments/templates/check_ins/mirror)
 
 - stake bounds for goals + verifications (only >= 0 today) — left as is
 - schema renames (`commitments`, `legacy_instance_id`, stake units) — leave
