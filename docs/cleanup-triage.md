@@ -69,8 +69,10 @@ needs a call. build estimates are claude code wall-clock.
 ## your call / later
 - usage_limit check edits classify as weaken whole-check (a tightening waits
   48h too) — per-field directions in `apply-edit.ts` when it matters
-- move mobile + distractions onto usage_limit checks, then delete the
-  server's screen-time stack (commitments/templates/check_ins/mirror)
+- distractions moved onto goals 2026-10-29 (phone lists, gate, usage
+  checks). left: retire commitkit-mobile, then delete the server's
+  screen-time stack (commitments/templates/check_ins/mirror; violations
+  stays, it's shared) + the desktop's /api/checkin/status tab
 
 - stake bounds for goals + verifications (only >= 0 today) — left as is
 - schema renames (`commitments`, `legacy_instance_id`, stake units) — leave
