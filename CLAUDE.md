@@ -110,7 +110,7 @@ railway variable list --service <svc> --json             # Service variables
 
 | Service | What It Does |
 |---------|-------------|
-| `commitkit-screentime-server` | Main Express API (api.screentime.commitkit.com) |
+| `commitkit-screentime-server` | Main Express API (api.commitkit.com; api.screentime.commitkit.com is being retired) |
 | `ck-st-prod` | PostgreSQL database (prod); `ck-st-dev` also exists for dev |
 | `missed-checkins-cron` | Hourly at :05 — runs the unified `cron:commitment-failures` script (charges for missed screen-time check-ins, timer deadlines, and plan deadlines). Name is legacy — it now does all three. The :05 offset avoids racing client-side real-time reports for timers/plans that end on round times. |
 | `givedirectly-payout-cron` | Batches GiveDirectly penalty payouts via Mercury. The cron service only POSTs to the server — the Mercury transfer code runs on `commitkit-screentime-server`, so all three `MERCURY_*` vars (`API_KEY`, `ACCOUNT_ID`, `RECIPIENT_ID`) must live **on the server service** (fixed 2026-07-14; they were misplaced on the cron service). Mercury expires API tokens after long disuse — payout volume is often below the $10 batch threshold, so expect to recreate the token occasionally (needs Read and Write — it POSTs transfers). The server has Railway Static Outbound IPs enabled (Settings → Networking; Pro plan), so the token's allowlist is `162.220.234.241`, `152.55.180.242`, `152.55.180.243` — not `0.0.0.0/0`. The IPs are shared with other Railway customers, and they change if the service moves region (update the allowlist first). Since 2026-10-26 the crons carry only `CRON_SECRET` (a `${{shared.CRON_SECRET}}` reference); keep `MERCURY_*` off them and out of shared variables. |
@@ -193,7 +193,7 @@ commitkit-cli ──reads/writes──> commitkit-desktop's SQLite DB (~/Library
 commitkit-cli ──talks to──> commitkit-monitor's HTTP API (127.0.0.1:8787)
 
 commitkit-mobile ──syncs with──> commitkit-server
-commitkit-desktop ──syncs with──> commitkit-server (api.screentime.commitkit.com)
+commitkit-desktop ──syncs with──> commitkit-server (api.commitkit.com)
 commitkit-cli ──syncs with──> commitkit-server (via ckv_ API token + combined auth middleware)
 ```
 
@@ -209,7 +209,7 @@ commitkit-cli ──syncs with──> commitkit-server (via ckv_ API token + com
 | Activity data (monitor DB) | **Local only** | Too granular/sensitive for server; only compliance verdicts cross the boundary |
 | Violations | **Server is ledger** | Server processes Stripe charges; mobile keeps a UI cache, the desktop none (local table dropped in schema v35) |
 | Plans, requirements, evaluations | **Server only** | Web-managed, AI-evaluated, no local copy needed |
-| Claude verification templates/commitments | **Server only** | AI-reported via API token (`/api/claude-verifications/report`); desktop is thin UI. Credentials file at `~/.commitkit/credentials.json` (0600). Full reporting contract: `commitkit-server/docs/claude-verification-contract.md`. |
+| Claude checks (Goal checks of type `claude_check`) | **Server only** | 2026-10-30. The rule is the check's `template`; an agent verifies it and reports through the MCP connector (`POST /mcp`, OAuth, `commitkit-server/docs/mcp-connector.md`) or a script reports by `config.slug` with a `ckv_` token (`/api/claude-verifications/report`, credentials at `~/.commitkit/credentials.json`). The verdict and evidence live on the Goal instance (`claude_reports`); a pass latches. Contract: `commitkit-server/docs/claude-verification-contract.md`. The older `claude_verifications` templates + stake-0 mirror rows remain as the slug fallback until retired (`drizzle/0046` converts Goal checks that used them). |
 | Projects | **Local creates, server owns the rules** (2026-10-29) | Desktop/CLI keep a local copy (lists attach locally); the server owns `rules` (eval rules + working directories) so edits follow akrasia. `client_id` = local `projects.uuid` = completions' `project_uuid` |
 | Stripe charges, payouts | **Server only** | Financial records |
 
