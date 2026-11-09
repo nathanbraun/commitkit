@@ -42,17 +42,26 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- toolchain -------------------------------------------------------------
 bold "Checking toolchain"
-# Non-interactive bash doesn't get zshrc's PATH; add the usual install spots.
+# Non-interactive bash doesn't get zshrc's PATH; add the usual install spots
+# as fallbacks *after* the inherited PATH, so a stale /usr/local/bin/node (old
+# nodejs.org pkg install) can't shadow the shell's nvm node.
 for d in "$HOME/.cargo/bin" "${PNPM_HOME:-$HOME/Library/pnpm}" /opt/homebrew/bin /usr/local/bin; do
-  [ -d "$d" ] && PATH="$d:$PATH"
+  [ -d "$d" ] && PATH="$PATH:$d"
 done
-if ! command -v node >/dev/null && [ -d "$HOME/.nvm/versions/node" ]; then
-  PATH="$(ls -d "$HOME"/.nvm/versions/node/*/bin | sort -V | tail -1):$PATH"
+# Next 16 needs node >= 20.9 (and Homebrew's corepack, which serves pnpm, dies
+# on < 18.17 with "URL.canParse is not a function"). If the node on PATH is
+# missing or older, fall back to the newest nvm-installed one.
+node_major() { node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/'; }
+if [ "$(node_major || echo 0)" -lt 20 ] 2>/dev/null || ! command -v node >/dev/null; then
+  if [ -d "$HOME/.nvm/versions/node" ]; then
+    PATH="$(ls -d "$HOME"/.nvm/versions/node/*/bin | sort -V | tail -1):$PATH"
+  fi
 fi
 export PATH
 xcode-select -p >/dev/null 2>&1 || die "Xcode command line tools missing: xcode-select --install"
 command -v cargo >/dev/null || die "cargo missing: install rustup (https://rustup.rs)"
-command -v node  >/dev/null || die "node missing (nvm install --lts)"
+command -v node  >/dev/null || die "node missing (nvm install 22 && nvm alias default 22)"
+[ "$(node_major)" -ge 20 ] || die "node $(node -v) is too old; Next 16 needs >= 20.9 (nvm install 22 && nvm alias default 22)"
 command -v pnpm  >/dev/null || die "pnpm missing: corepack enable pnpm  (or npm i -g pnpm)"
 if ! cargo tauri --version >/dev/null 2>&1; then
   echo "tauri-cli missing; installing (a few minutes, once)"
