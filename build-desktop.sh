@@ -171,6 +171,11 @@ bold "Signing identity"
 identity="${APPLE_SIGNING_IDENTITY:-$(python3 -c "import json; print(json.load(open('$DESKTOP/src-tauri/tauri.conf.json'))['bundle']['macOS'].get('signingIdentity',''))")}"
 if [ -n "$identity" ] && security find-identity -v -p codesigning | grep -qF "\"$identity\""; then
   echo "$identity"
+elif [ -n "$identity" ] && security find-identity -p codesigning | grep -qF "\"$identity\""; then
+  # Imported (cert + key) but not trusted: almost always the missing Developer
+  # ID G2 intermediate, which Xcode installs and a fresh Mac lacks.
+  die "'$identity' is in the keychain but not valid. Install Apple's intermediate:
+  curl -sO https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer && security add-certificates DeveloperIDG2CA.cer && rm DeveloperIDG2CA.cer"
 else
   warn "'$identity' isn't in this Mac's keychain; building ad-hoc signed."
   warn "Screen Recording / Accessibility grants won't survive rebuilds. For a stable"
