@@ -174,7 +174,7 @@ if [ -n "$identity" ] && security find-identity -v -p codesigning | grep -qF "\"
 else
   warn "'$identity' isn't in this Mac's keychain; building ad-hoc signed."
   warn "Screen Recording / Accessibility grants won't survive rebuilds. For a stable"
-  warn "identity: Xcode > Settings > Accounts > Manage Certificates > + Apple Development."
+  warn "identity: export the Developer ID Application cert (+ key) as .p12 from a Mac that has it."
   export APPLE_SIGNING_IDENTITY="-"
 fi
 
